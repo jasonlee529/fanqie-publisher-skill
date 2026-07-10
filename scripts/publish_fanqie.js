@@ -1,9 +1,20 @@
 #!/usr/bin/env node
 const fs = require('fs');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawnSync, execFile } = require('child_process');
+const { promisify } = require('util');
 const { ensureDir, ensureLoggedIn } = require('./fanqie_login_flow');
 const { resolvePage } = require('./browser_page_picker');
+const {
+  locateMainEditor,
+  setProseMirrorContent,
+  readEditorContent,
+  assertUnicodeFidelity,
+  resolveDryRunConfig,
+  checkSafeStop,
+  resolveElement,
+  diagnoseSelector,
+} = require('./editor_input');
 
 const BOOK_ID = '7616021706989128728';
 const BOOK_NAME = '末日倒计时：开局强行绑定救世主';
@@ -638,29 +649,94 @@ async function fillDraft(page, chapter, shotsDir, prefix, args = {}) {
     }
   }
 
-  const serialInput = page.locator('input.serial-input.byte-input.byte-input-size-default').first();
+  // --- 章节号输入：语义优先 → CSS降级 → 诊断 ---
+  const serialResult = await resolveElement(page, {
+    name: '章节号输入框',
+    semantic: [
+      { type: 'css', value: 'input[inputmode="numeric"]' },
+      { type: 'placeholder', value: '章节号' },
+      { type: 'aria-label', value: '章节号' },
+    ],
+    fallback: ['input.serial-input.byte-input.byte-input-size-default', 'input.serial-input'],
+    debug: !!args['debug-editor'],
+  });
+  let serialInput = serialResult.locator;
+  if (!serialInput) {
+    serialInput = page.locator('input.serial-input').first();
+    if (args['debug-editor']) {
+      const diag = await diagnoseSelector(page, { name: '章节号输入框', semanticHint: '章节' });
+      console.warn(`[诊断] 章节号输入框语义匹配失败，用CSS降级。候选项:`, JSON.stringify(diag.candidates.slice(0, 5), null, 2));
+    }
+  }
   const num = chapterNumber(chapter);
   if (num) await serialInput.fill(num);
 
-  const titleInput = page.locator('input[placeholder="请输入标题"]').first();
+  // --- 标题输入：语义优先 → CSS降级 → 诊断 ---
+  const titleResult = await resolveElement(page, {
+    name: '标题输入框',
+    semantic: [
+      { type: 'placeholder', value: '请输入标题' },
+      { type: 'aria-label', value: '标题' },
+    ],
+    fallback: ['input[placeholder="请输入标题"]'],
+    debug: !!args['debug-editor'],
+  });
+  let titleInput = titleResult.locator;
+  if (!titleInput) {
+    titleInput = page.locator('input[placeholder="请输入标题"]').first();
+    if (args['debug-editor']) {
+      const diag = await diagnoseSelector(page, { name: '标题输入框', semanticHint: '标题' });
+      console.warn(`[诊断] 标题输入框语义匹配失败，用CSS降级。候选项:`, JSON.stringify(diag.candidates.slice(0, 3), null, 2));
+    }
+  }
   await titleInput.fill(chapter.display_title || chapter.title);
 
-  const editor = page.locator('.ProseMirror[contenteditable="true"]').first();
+  // --- 编辑器正文（使用封装模块 editor_input.js） ---
+  const dryRunConfig = resolveDryRunConfig(args);
+
+  // 1. 智能定位主编辑器（避免固定 .first()）
+  const { locator: editor, found, candidates } = await locateMainEditor(page, { debug: !!args['debug-editor'] });
+  if (!editor) {
+    throw new Error(
+      `未找到主编辑器。检测到 ${found} 个 contenteditable，候选: ${JSON.stringify(candidates)}`
+    );
+  }
+  if (found > 1 && args['debug-editor']) {
+    console.log(`[fillDraft] 检测到 ${found} 个 contenteditable，已按尺寸优先选择第 ${candidates[0].index} 个`);
+  }
+
+  // 2. safe-stop: before-fill
+  const stop1 = checkSafeStop('before-fill', dryRunConfig);
+  if (stop1.shouldBreak) {
+    console.log(stop1.message);
+    return { mode: `dry-run:${dryRunConfig.safeStop}`, volumeResult, contentVerified: false };
+  }
+
   await editor.click();
-  await editor.evaluate((el, content) => {
-    el.focus();
-    el.innerHTML = '';
-    const lines = String(content).split(/\n+/);
-    for (const line of lines) {
-      const p = document.createElement('p');
-      p.textContent = line;
-      el.appendChild(p);
-    }
-  }, chapter.content);
+
+  // 3. Unicode 安全输入（触发 beforeinput/input 事件，非裸 innerHTML）
+  await setProseMirrorContent(editor, chapter.content);
+
+  // 4. 回读 + 严格断言
+  const readBack = await readEditorContent(editor);
+  const assertion = assertUnicodeFidelity(chapter.content, readBack);
+  if (!assertion.pass) {
+    console.warn('[fillDraft] ⚠ 输入回读不一致:', JSON.stringify(assertion.differences.slice(0, 5), null, 2));
+    throw new Error(`Unicode 一致性校验失败: ${assertion.differences.length} 处差异`);
+  } else {
+    console.log(`[fillDraft] ✅ 输入回读一致 (${readBack.length} chars)`);
+  }
+
+  // 5. safe-stop: after-fill
+  const stop2 = checkSafeStop('after-fill', dryRunConfig);
+  if (stop2.shouldBreak) {
+    console.log(stop2.message);
+    return { mode: `dry-run:${dryRunConfig.safeStop}`, volumeResult, contentVerified: assertion.pass, assertion };
+  }
 
   await page.waitForTimeout(1000);
   await page.screenshot({ path: path.join(shotsDir, `${prefix}-02-filled-draft.png`), fullPage: true });
-  return { mode: 'filled', volumeResult };
+  return { mode: 'filled', volumeResult, contentVerified: assertion.pass, assertion };
 }
 
 async function handleInterceptors(page) {
@@ -729,7 +805,26 @@ async function handleInterceptors(page) {
 }
 
 async function goToFinalPublishModal(page, chapter, shotsDir, prefix, args = {}) {
-  await page.locator('.publish-button.auto-editor-next').first().click();
+  // 下一步按钮：语义优先（按文本/aria-label）→ CSS降级 → 诊断
+  const nextResult = await resolveElement(page, {
+    name: '下一步按钮',
+    semantic: [
+      { type: 'role', value: 'button' },
+      { type: 'text', value: '下一步' },
+      { type: 'aria-label', value: '下一步' },
+    ],
+    fallback: ['.publish-button.auto-editor-next'],
+    debug: !!args['debug-editor'],
+  });
+  let nextBtn = nextResult.locator;
+  if (!nextBtn) {
+    nextBtn = page.locator('.publish-button.auto-editor-next').first();
+    if (args['debug-editor']) {
+      const diag = await diagnoseSelector(page, { name: '下一步按钮', semanticHint: '下一步' });
+      console.warn(`[诊断] 下一步按钮语义匹配失败，用CSS降级。候选项:`, JSON.stringify(diag.candidates.slice(0, 5), null, 2));
+    }
+  }
+  await nextBtn.click();
   await page.waitForTimeout(1500);
   await page.screenshot({ path: path.join(shotsDir, `${prefix}-03-after-next.png`), fullPage: true });
 
@@ -737,7 +832,23 @@ async function goToFinalPublishModal(page, chapter, shotsDir, prefix, args = {})
   await page.screenshot({ path: path.join(shotsDir, `${prefix}-04-after-interceptors.png`), fullPage: true });
   await page.waitForTimeout(1000);
 
-  const publishModal = page.locator('.arco-modal.publish-confirm-container-new').last();
+  // 发布确认弹窗：语义优先（role="dialog" + 文本内容检测）→ CSS降级 → 诊断
+  const modalResultRes = await resolveElement(page, {
+    name: '发布确认弹窗',
+    semantic: [
+      { type: 'role', value: 'dialog' },
+    ],
+    fallback: ['.arco-modal.publish-confirm-container-new'],
+    debug: !!args['debug-editor'],
+  });
+  let publishModal = modalResultRes.locator;
+  if (!publishModal) {
+    publishModal = page.locator('.arco-modal.publish-confirm-container-new').last();
+    if (args['debug-editor']) {
+      const diag = await diagnoseSelector(page, { name: '发布确认弹窗', semanticHint: '确认发布' });
+      console.warn(`[诊断] 发布弹窗语义匹配失败，用CSS降级。候选项:`, JSON.stringify(diag.candidates.slice(0, 5), null, 2));
+    }
+  }
   if (!await publishModal.count()) {
     return { ok: false, reason: `未检测到最终发布弹窗。gateResult=${gateResult}` };
   }
@@ -891,6 +1002,29 @@ async function publishOneOnce(page, context, chapter, args, shotsDir, stateFile,
     return { chapter, mode: 'debug-volume-stop', ok: true, volumeResult: fillResult.volumeResult };
   }
 
+  if (fillResult?.mode?.startsWith('dry-run:')) {
+    return {
+      chapter,
+      mode: fillResult.mode,
+      ok: true,
+      volumeResult: fillResult.volumeResult,
+      contentVerified: fillResult.contentVerified,
+    };
+  }
+
+  const dryRunConfig = resolveDryRunConfig(args);
+  const beforeSaveStop = checkSafeStop('before-save', dryRunConfig);
+  if (beforeSaveStop.shouldBreak) {
+    console.log(beforeSaveStop.message);
+    return {
+      chapter,
+      mode: `dry-run:${dryRunConfig.safeStop}`,
+      ok: true,
+      volumeResult: fillResult?.volumeResult,
+      contentVerified: fillResult?.contentVerified,
+    };
+  }
+
   if (args['dry-run'] || args['fill-only']) {
     return { chapter, mode: 'fill-only', ok: true, volumeResult: fillResult?.volumeResult };
   }
@@ -900,6 +1034,18 @@ async function publishOneOnce(page, context, chapter, args, shotsDir, stateFile,
 
   if (args['to-final-modal'] || !args['confirm-publish']) {
     return { chapter, mode: 'to-final-modal', ok: true, volumeResult: fillResult?.volumeResult };
+  }
+
+  const beforePublishStop = checkSafeStop('before-publish', dryRunConfig);
+  if (beforePublishStop.shouldBreak) {
+    console.log(beforePublishStop.message);
+    return {
+      chapter,
+      mode: `dry-run:${dryRunConfig.safeStop}`,
+      ok: true,
+      volumeResult: fillResult?.volumeResult,
+      contentVerified: fillResult?.contentVerified,
+    };
   }
 
   if (mode === 'scheduled') {
@@ -930,10 +1076,17 @@ async function publishOneOnce(page, context, chapter, args, shotsDir, stateFile,
     return { chapter, ok: false, reason: '当前版本只开放 immediate / scheduled。' };
   }
 
-  const confirmPublishBtn = modalResult.publishModal.locator('button').filter({ hasText: '确认发布' }).first();
-  if (!await confirmPublishBtn.count()) {
-    return { chapter, ok: false, reason: '未找到“确认发布”按钮。' };
+  let confirmPublishBtn = modalResult.publishModal.getByRole('button', { name: '确认发布', exact: true });
+  const confirmCount = await confirmPublishBtn.count();
+  if (confirmCount !== 1) {
+    const diag = await diagnoseSelector(page, { name: '确认发布按钮', semanticHint: '确认发布', tagFilter: ['button'] });
+    return {
+      chapter,
+      ok: false,
+      reason: `“确认发布”按钮匹配数量异常：期望1，实际${confirmCount}。候选：${JSON.stringify(diag.candidates.slice(0, 5))}`,
+    };
   }
+  confirmPublishBtn = confirmPublishBtn.first();
 
   await page.screenshot({ path: path.join(shotsDir, `${prefix}-06-before-confirm-publish.png`), fullPage: true });
   await confirmPublishBtn.click().catch(async () => confirmPublishBtn.click({ force: true }));

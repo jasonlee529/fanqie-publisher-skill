@@ -7,7 +7,11 @@
   "scripts": {
     "preview": "python3 scripts/prepare_chapters.py --help",
     "login": "node scripts/login_fanqie.js",
-    "publish": "node scripts/publish_fanqie.js"
+    "publish": "node scripts/publish_fanqie.js",
+    "test": "node test/test_editor_input.js",
+    "test:editor": "node test/test_editor_input.js",
+    "test:syntax": "node --check scripts/editor_input.js && node --check scripts/publish_fanqie.js && echo '✅ Syntax OK'",
+    "test:all": "npm run test:syntax && npm run test:editor"
   },
   "keywords": [
     "openclaw",

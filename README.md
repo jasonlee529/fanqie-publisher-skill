@@ -1,155 +1,77 @@
 # fanqie-publisher
 
-[![Release](https://img.shields.io/github/v/release/amm10090/fanqie-publisher-skill?display_name=tag&style=flat-square)](https://github.com/amm10090/fanqie-publisher-skill/releases/tag/v0.1.0)
+[![Release](https://img.shields.io/github/v/release/amm10090/fanqie-publisher-skill?display_name=tag&style=flat-square)](https://github.com/amm10090/fanqie-publisher-skill/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](./LICENSE)
 [![OpenClaw Skill](https://img.shields.io/badge/OpenClaw-Skill-blue?style=flat-square)](./SKILL.md)
 [![Playwright](https://img.shields.io/badge/Playwright-Automation-45ba4b?style=flat-square)](https://playwright.dev/)
 
-> 一个面向 OpenClaw 的番茄小说发布 Skill：把本地 Markdown 章节转成可重复执行的作者后台发布流程，覆盖单章发布、批量发布、平台原生定时发布与发布后状态校验。
+面向 OpenClaw 的番茄小说发布 Skill。它通过 Playwright 接管浏览器，把本地 Markdown 章节填入番茄作者后台，支持立即发布、平台原生定时发布和发布后状态校验。
 
-## 简介
+> 这不是番茄官方 SDK 或公开 API 封装。页面改版可能影响自动化流程，真实发布前请先用安全模式验证。
 
-`fanqie-publisher` 是一个以 **OpenClaw Skill** 形式组织的自动化项目，核心目标是把“本地章节文件 → 番茄作者后台发布”这条重复操作流程工具化。
+## 核心能力
 
-它不是番茄官方 SDK，也不是公开 API 封装，而是基于浏览器自动化的实战方案，适合希望保留平台原生发布链路、又想减少重复手工操作的人使用。
+- 单章或批量读取 Markdown 章节
+- 自动拆分章节号、标题与正文
+- 适配新版章节编辑器，可靠输入中文、Emoji 和换行
+- 登录失效时引导二维码登录并复用浏览器会话
+- 支持立即发布和番茄后台原生定时发布
+- 处理错别字、内容风险检测、最终发布设置等中间弹窗
+- 发布后回到章节管理页核对章节状态
+- 提供 `--fill-only` 等安全模式，避免误发布
 
-## 适用场景
+## 环境要求
 
-适合：
+- Node.js 与 npm
+- Python 3
+- 可由 Playwright 接管的 Chromium/Chrome 浏览器
+- 已开通番茄作者后台的账号
 
-- 已经有结构化的章节 Markdown 文件
-- 希望减少作者后台重复填表操作
-- 接受浏览器自动化方案
-- 希望同时支持立即发布与平台原生定时发布
-- 希望发布后自动核对章节管理页状态
+## 安装
 
-不适合：
-
-- 依赖官方开放 API 的场景
-- 无法提供可接管浏览器环境的场景
-- 追求完全无 UI、纯接口式调用的场景
-
-## 当前能力
-
-目前已经实现或验证过的能力：
-
-- 解析本地 Markdown 章节文件
-- 自动拆分章节号与章节标题
-- 自动填写番茄章节编辑器
-- 单章立即发布
-- 批量立即发布
-- 使用番茄后台原生“定时发布”创建待发布章节
-- 发布后跳转章节管理页进行状态校验
-- 通过 Playwright + CDP 接管已有浏览器会话
-- 支持安全模式（只填充 / 只走到最终发布弹窗）
-- 增加疑似单日 5 万字发布上限的保护阈值
-
-## 项目结构
-
-```text
-fanqie-publisher/
-├── SKILL.md
-├── README.md
-├── LICENSE
-├── CHANGELOG.md
-├── scripts/
-│   ├── prepare_chapters.py
-│   ├── login_fanqie.js
-│   ├── publish_fanqie.js
-│   └── state.py
-├── references/
-│   ├── workflow.md
-│   ├── selectors.md
-│   ├── data-format.md
-│   └── recon-notes-2026-03-12.md
-├── package.json
-└── .gitignore
+```bash
+git clone https://github.com/amm10090/fanqie-publisher-skill.git
+cd fanqie-publisher-skill
+npm install
 ```
 
-## 核心脚本
+作为 OpenClaw Skill 使用时，将仓库目录交给 OpenClaw，并以 [`SKILL.md`](./SKILL.md) 作为完整操作说明。
 
-### `scripts/prepare_chapters.py`
+## 章节格式
 
-负责读取章节目录中的 Markdown 文件，并输出结构化章节数据。
+一个 `.md` 文件对应一章。推荐文件名和内容如下：
 
-当前默认支持的格式特征：
+```text
+第001章_标题.md
 
-- 一个 `.md` 文件对应一章
-- 标题通常位于第一行 Markdown 标题中
-- 形如 `第001章 标题` 的标题会自动拆成：
-  - 章节号：`1`
-  - 标题：`标题`
+# 第001章 标题
 
-### `scripts/login_fanqie.js`
+第一段正文。
 
-负责连接浏览器、识别未登录状态、切到二维码登录并保存登录态。
+第二段正文。
+```
 
-当检测到需要扫码时，会额外输出机器可读事件：
+解析器会移除正文中的首个 Markdown 标题，并把 `第001章 标题` 拆成章节号 `1` 与标题 `标题`。更多规则见 [`references/data-format.md`](./references/data-format.md)。
 
-- `QR_READY:/abs/path/to/login-qr.png`
-- `LOGIN_OK`
-- `LOGIN_ALREADY_OK`
-- `LOGIN_TIMEOUT`
+## 快速开始
 
-并在标准输出中包含一段可供 OpenClaw 转发的 `MEDIA:` 回复块。
-
-### `scripts/login_fanqie_notify.js`
-
-这是一个轻量包装器，用来运行 `login_fanqie.js`，并把关键结果整理成 JSON，便于上层编排逻辑读取：
-
-- 是否成功登录
-- 二维码图片路径
-- 可直接发送到聊天渠道的 `mediaReply`
-
-适合场景：
-
-- 本地有图形浏览器
-- 或在 WSL 中通过 CDP 接管 Windows 浏览器
-- 登录态过期，需要重新扫码
-
-当前会在需要扫码时自动把二维码截图保存到 `state/login-qr.png`。
-
-另外已加入二维码失效检测：优先读取页面文本判断是否出现“二维码已失效 / 点击刷新”等提示；如果系统安装了 `tesseract`，还会对登录面板截图做 OCR 兜底检测，并在需要时自动尝试刷新二维码。
-
-### `scripts/publish_fanqie.js`
-
-主发布脚本，负责：
-
-- 优先复用正确的番茄 writer 页面，并自动收敛多余 writer 标签
-- 当 remote 浏览器未运行时，自动尝试恢复 Windows Chrome 9222 会话
-- 打开章节编辑页
-- 自动检测登录态是否失效
-- 失效时切到二维码登录并等待重新扫码
-- 自动填充标题 / 正文
-- 处理中间拦截弹窗
-- 进入最终发布弹窗
-- 立即发布或定时发布
-- 发布后去章节管理页校验状态
-- 对页面漂移、最终弹窗未稳定关闭、短暂验证失败等可恢复问题自动重试一次
-
-## 使用方式
-
-### 1）预览章节解析结果
+### 1. 预览解析结果
 
 ```bash
 python3 scripts/prepare_chapters.py --dir "/path/to/chapters" --preview
 ```
 
-### 2）保存登录态
+### 2. 连接已登录浏览器
 
-如果通过 CDP 接管已有浏览器：
+以下示例使用 Chrome DevTools Protocol：
 
 ```bash
 node scripts/login_fanqie.js --cdp http://127.0.0.1:9222
 ```
 
-如果你希望上层自动读取二维码路径和可发送附件内容：
+如果登录态失效，脚本会引导二维码登录。需要让上层程序读取二维码路径时，可改用 `scripts/login_fanqie_notify.js`。
 
-```bash
-node scripts/login_fanqie_notify.js --cdp http://127.0.0.1:9222
-```
-
-### 3）单章安全填充（不发布）
+### 3. 先做安全填充
 
 ```bash
 node scripts/publish_fanqie.js \
@@ -159,109 +81,38 @@ node scripts/publish_fanqie.js \
   --fill-only
 ```
 
-### 4）单章立即发布
+确认章节号、标题、正文、分卷和页面状态都正确后，再把 `--fill-only` 改为 `--confirm-publish` 进行真实发布。
+
+批量发布、定时发布、分卷选择、重试和全部参数见 [`SKILL.md`](./SKILL.md)。
+
+## 安全边界
+
+- 首次运行或页面改版后，先发布一章或只使用 `--fill-only`
+- 真正提交前确认目标书籍、分卷、章节号、标题和正文
+- 不要提交登录态、浏览器会话、后台截图、二维码或临时状态文件
+- 脚本把 `50,000` 字/日作为经验性安全阈值；它不是官方公开额度
+- 定时章节进入发布时间前约 30 分钟后，后台可能不再允许可靠修改
+
+## 平台限制
+
+番茄后台可能出现引导浮层、错别字提示、内容风险检测、版本冲突或发布设置弹窗。选择器和流程会随页面变化，遇到异常时请先检查页面，再更新：
+
+- [`references/selectors.md`](./references/selectors.md) — 语义控件与选择器清单
+- [`references/workflow.md`](./references/workflow.md) — 已验证的发布流程
+- [`references/editor-recon.md`](./references/editor-recon.md) — 新版编辑器勘测记录
+
+## 开发与测试
 
 ```bash
-node scripts/publish_fanqie.js \
-  --cdp http://127.0.0.1:9222 \
-  --file "/path/to/chapter.md" \
-  --mode immediate \
-  --confirm-publish
+npm run test:all
 ```
 
-### 5）批量立即发布
+该命令执行 JavaScript 语法检查和编辑器输入测试。核心入口：
 
-```bash
-node scripts/publish_fanqie.js \
-  --cdp http://127.0.0.1:9222 \
-  --dir "/path/to/chapters" \
-  --start-from "第018章" \
-  --limit 3 \
-  --mode immediate \
-  --confirm-publish
-```
-
-### 6）使用番茄后台原生定时发布
-
-```bash
-node scripts/publish_fanqie.js \
-  --cdp http://127.0.0.1:9222 \
-  --dir "/path/to/chapters" \
-  --start-from "第018章" \
-  --limit 3 \
-  --mode scheduled \
-  --schedule-at "2026-03-13 21:00" \
-  --schedule-step-minutes 30 \
-  --confirm-publish
-```
-
-## 已知平台限制
-
-### 1）疑似单日发布字数上限
-
-根据真实后台行为推断，番茄存在一个大约 **50,000 字 / 日** 的实际发布上限。
-
-> 这是基于后台提示和真实操作经验的安全阈值，**不是当前 README 中引用的官方文档结论**。
-
-脚本中已加入保护参数：
-
-- `--daily-limit-chars`
-- `--already-published-chars`
-
-### 2）定时发布的修改锁窗
-
-如果后台提示：
-
-```text
-请在发布时间前30分钟提交修改内容，否则无法完成修改
-```
-
-应当视为：
-
-- 该定时章节在接近发布时间时基本无法可靠修改
-- 定时发布时间应尽量一次设置正确
-- 不要假设临近发布时间还能安全调整内容或时间
-
-### 3）平台前置拦截弹窗
-
-在点击“下一步”后，番茄后台可能出现多层中间弹窗，例如：
-
-- 内容风险检测
-- 错别字智能纠错
-- 提交确认提示
-- 编辑器版本冲突提示
-- 引导浮层
-
-这些拦截层会影响自动化稳定性，因此需要持续维护 selector 与处理逻辑。
-
-## 安全与隐私
-
-本仓库**不应提交**以下内容：
-
-- 登录态文件
-- 浏览器会话数据
-- 后台截图
-- 页面勘测产物
-- `node_modules`
-- 临时状态文件
-
-这些内容应留在本地，并通过 `.gitignore` 排除。
-
-## 当前状态
-
-当前版本已经可以完成真实发布流程，但仍依赖：
-
-- 页面结构相对稳定
-- 本地浏览器可接管
-- 对番茄后台交互细节的持续维护
-
-## 后续方向
-
-- 更稳的页面选择与恢复策略
-- 更稳的章节管理页状态解析
-- 对“已排定时章节”的修改流程支持
-- 更精细的错误分类和恢复策略
-- 对更多弹窗/异常态的覆盖
+- `scripts/publish_fanqie.js` — 发布主流程
+- `scripts/editor_input.js` — Unicode 正文输入与回读校验
+- `scripts/login_fanqie.js` — 登录与会话处理
+- `scripts/prepare_chapters.py` — Markdown 章节解析
 
 ## 许可证
 

@@ -1,6 +1,6 @@
 {
   "name": "fanqie-publisher-skill",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "OpenClaw Skill：通过浏览器自动化将本地 Markdown 章节发布到番茄作者后台",
   "main": "scripts/publish_fanqie.js",
   "type": "commonjs",

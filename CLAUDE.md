@@ -1,0 +1,77 @@
+# fanqie-publisher-skill — Claude Code Adapter
+
+Publish prepared novel chapters from local Markdown files to the Fanqie Novel writer web backend via browser automation (Playwright).
+
+## Read First
+
+Do not act without reading these authoritative shared files:
+
+- [`SKILL.md`](./SKILL.md) — full skill definition, commands, safety rules, and publishing flow
+- [`references/workflow.md`](./references/workflow.md) — validated step-by-step publish workflow
+- [`references/selectors.md`](./references/selectors.md) — semantic CSS selectors for Fanqie backend pages
+- [`references/editor-recon.md`](./references/editor-recon.md) — editor reconnaissance notes
+- [`scripts/publish_fanqie.js`](./scripts/publish_fanqie.js) — the sole publishing entrypoint (read flags, not copy logic)
+- [`package.json`](./package.json) — dependency: `playwright` only
+
+## Entry Points
+
+| Action | Command |
+|--------|---------|
+| Preview chapter parse | `python3 scripts/prepare_chapters.py --dir "/path/to/chapters" --preview` |
+| Login / reconnect | `node scripts/login_fanqie.js --cdp http://127.0.0.1:9222` |
+| Safe fill-only publish | `node scripts/publish_fanqie.js --cdp http://127.0.0.1:9222 --file "/path/to/chapter.md" --mode immediate --fill-only` |
+| Real publish | Only after explicit user confirmation: use the same reviewed arguments, **remove `--fill-only`**, and add `--confirm-publish`, e.g. `node scripts/publish_fanqie.js --cdp http://127.0.0.1:9222 --file "/path/to/chapter.md" --mode immediate --confirm-publish`; never combine the two flags |
+| Syntax check | `npm run test:syntax` |
+| All tests | `npm run test:all` |
+
+## Prerequisites
+
+- Node.js + npm, Python 3
+- Chromium/Chrome browser (Playwright-controllable via CDP)
+- A Fanqie author account; QR-code login must be completed manually when the session is absent or expired
+- Run `npm install` in repo root before first use
+
+## UTF-8 / Unicode Safeguards
+
+- Chapter files **must** be valid UTF-8 with no BOM
+- Use `scripts/prepare_chapters.py --preview` to verify parsing before any publish attempt
+- The editor input flow (`scripts/editor_input.js`) validates CJK, emoji, and newline round-trip fidelity
+- Always inspect a single filled chapter visually before batch operations
+
+## Publish Safety Protocol
+
+1. **Preview first**: `python3 scripts/prepare_chapters.py --dir "<chapters>" --preview`
+2. **Fill-only dry run**: `node scripts/publish_fanqie.js --fill-only` — fills the editor but does **not** submit
+   - Verify: chapter number, title, body, volume assignment, page state
+3. **Final publish modal is not published**: the `确认发布` click is the actual submit — verify modal contents (volume, chapter title, AI=否) before clicking
+4. **Post-publish verification**: always navigate back to chapter management and confirm row status is `审核中` or `已发布`
+5. **Scheduled publish**: opening the scheduled timer in the modal is not publication; only `确认发布` with a timer set is the real action
+
+**Never report success** without post-publish chapter-management verification.
+
+## Status Differentiation
+
+Clearly distinguish these outcomes:
+
+- `preview-only`: parsing preview only; nothing was filled or submitted
+- `fill-only`: editor fields were filled; nothing was submitted
+- `to-final-modal`: the final publish modal was reached but not confirmed
+- `submitted-unverified`: submit was clicked, but the management page did not contain the target chapter row; this is **not** a verified success
+- `published-verified`: the management page contains the target chapter with status `审核中` or `已发布`
+- `login-expired-or-timeout`: the session expired or manual QR login timed out; report failure
+- `input-validation-failed`: Unicode or other input validation failed; report failure without publishing
+
+## Shared Safety Rules (from SKILL.md)
+
+- 50,000 characters/day is a practical ceiling unless backend behavior proves otherwise
+- Scheduled chapters become non-editable ~30 min before publish time
+- In the final publish modal, explicitly set `是否使用AI → 否`
+- Login state expires — re-run `login_fanqie.js` when needed
+- Selectors change when the backend updates — inspect before assuming stability
+- Do not claim automatic dependency installation, automatic login, or bypass of human confirmation
+
+## Notes
+
+- This file is a **thin adapter** only. All business logic, selectors, and implementation reside in [`SKILL.md`](./SKILL.md), [`references/`](./references/), and [`scripts/`](./scripts/).
+- For batch publish, schedule, volume selection, and retry: read [`SKILL.md`](./SKILL.md).
+- For other platforms: see respective platform files in the repository root.

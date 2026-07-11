@@ -1,7 +1,7 @@
 {
   "name": "fanqie-publisher-skill",
   "version": "0.2.0",
-  "description": "OpenClaw Skill：通过浏览器自动化将本地 Markdown 章节发布到番茄作者后台",
+  "description": "Fanqie novel publishing automation for OpenClaw, Hermes Agent, Claude Code, Codex CLI, and Cline, powered by Playwright",
   "main": "scripts/publish_fanqie.js",
   "type": "commonjs",
   "scripts": {
@@ -15,6 +15,12 @@
   },
   "keywords": [
     "openclaw",
+    "hermes-agent",
+    "claude-code",
+    "codex-cli",
+    "cline",
+    "ai-agent",
+    "agent-automation",
     "skill",
     "fanqie",
     "playwright",

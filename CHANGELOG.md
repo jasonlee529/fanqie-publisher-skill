@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- 新增 Hermes Agent 兼容说明与隔离迁移验证，保留现有 OpenClaw `SKILL.md` 入口
+- 新增 Claude Code、Codex CLI 与 Cline 的薄适配文件，共享现有脚本、UTF-8 安全输入、发布确认和发布后核验规则
+- 重写英文 README 的多 Agent 使用教程，并新增简体中文与日语完整 README 及三语互链
+- 更新包描述与关键词，覆盖已确认平台、Fanqie、Playwright、小说发布和 Agent 自动化场景
+
 ## v0.2.0 — 2026-07-10
 
 - 适配番茄作者后台新版章节编辑器与发布流程

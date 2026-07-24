@@ -657,6 +657,112 @@ async function prepareQrForSharing(page, qrPath, logger = console) {
   return { qrCapture, refreshResult: { refreshed: false, status: finalStatus }, finalStatus };
 }
 
+/**
+ * cookieOnlyEnsureLoggedIn — 纯 Cookie 模式登录验证（用于 headless 环境）
+ *
+ * 与 ensureLoggedIn 的核心区别：
+ * - 不走轮询等待逻辑（不等待用户扫码）
+ * - 不切换登录方式、不截图二维码
+ * - 若 cookie 无效则立即失败返回，不循环等待
+ * - 可选：通过 CDP Network.setCookies 强制注入 cookie（解决某些跨域场景）
+ *
+ * @param {import('playwright').Page} page
+ * @param {import('playwright').BrowserContext} context
+ * @param {object} options
+ * @param {string} [options.loginUrl] - 登录页 URL（发现未登录时尝试跳转）
+ * @param {string} [options.statePath] - storageState 文件路径（用于注入 cookie）
+ * @param {boolean} [options.forceSetCookies=true] - 是否通过 CDP 强制注入 cookie
+ * @param {number} [options.waitAfterOpenMs=2500]
+ * @param {Console} [options.logger=console]
+ * @returns {Promise<{ loggedIn: boolean, alreadyLoggedIn?: boolean, cookieCount?: number, reason?: string }>}
+ */
+async function cookieOnlyEnsureLoggedIn(page, context, options = {}) {
+  const {
+    loginUrl = LOGIN_URL,
+    statePath,
+    forceSetCookies = true,
+    waitAfterOpenMs = 2500,
+    logger = console,
+  } = options;
+
+  // 1. 如果已在 writer 页面，直接检查
+  const currentUrl = page.url() || '';
+  if (currentUrl && currentUrl !== 'about:blank') {
+    if (await isLoggedIn(page)) {
+      logger.log('[cookie-only] 当前页面已检测到有效登录态');
+      return { loggedIn: true, alreadyLoggedIn: true };
+    }
+  }
+
+  // 2. 如果需要强制注入 cookie（headless 常见场景）
+  if (forceSetCookies && statePath && require('fs').existsSync(statePath)) {
+    try {
+      const state = JSON.parse(require('fs').readFileSync(statePath, 'utf8'));
+      const cookies = state?.cookies || [];
+      if (cookies.length > 0) {
+        // 构建 CDP 兼容的 cookie 格式并注入
+        const cdpCookies = cookies.map((c) => ({
+          name: c.name,
+          value: c.value,
+          domain: c.domain || '.fanqienovel.com',
+          path: c.path || '/',
+          expires: typeof c.expires === 'number' && c.expires > 0 ? c.expires : undefined,
+          httpOnly: c.httpOnly ?? false,
+          secure: c.secure ?? false,
+          sameSite: c.sameSite || 'Lax',
+        }));
+
+        try {
+          const cdpSession = await context.newCDPSession(page);
+          await cdpSession.send('Network.setCookies', { cookies: cdpCookies });
+          await cdpSession.detach().catch(() => {});
+          logger.log(`[cookie-only] 通过 CDP 注入了 ${cdpCookies.length} 个 cookie`);
+        } catch (cdpErr) {
+          // CDP 注入失败不是致命错误，context 在创建时已通过 storageState 加载了 cookie
+          logger.log(`[cookie-only] CDP cookie 注入失败（context 已预加载 cookie）: ${cdpErr.message}`);
+        }
+        logger.log(`[cookie-only] 已从 storageState 加载 ${cookies.length} 个 cookie`);
+      } else {
+        logger.log('[cookie-only] storageState 中没有 cookie，跳过注入');
+      }
+    } catch (err) {
+      logger.log(`[cookie-only] 读取 storageState 失败: ${err.message}`);
+    }
+  }
+
+  // 3. 导航到作家页面
+  if (!/fanqienovel\.com\/main\/writer/i.test(page.url() || '')) {
+    logger.log(`[cookie-only] 导航到: ${loginUrl}`);
+    await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch((err) => {
+      logger.log(`[cookie-only] 导航警告: ${err.message}`);
+    });
+  }
+  await page.waitForTimeout(waitAfterOpenMs);
+
+  // 4. 检查登录状态
+  const loggedIn = await isLoggedIn(page);
+  if (loggedIn) {
+    logger.log('[cookie-only] Cookie 认证成功，检测到有效登录态');
+    return { loggedIn: true, alreadyLoggedIn: false };
+  }
+
+  // 5. 检查是否跳转到登录页
+  const url = page.url() || '';
+  const bodyText = await page.locator('body').first().innerText().catch(() => '');
+
+  let reason;
+  if (/login|passport|auth/i.test(url)) {
+    reason = 'Cookie 已过期或无效，页面跳转到了登录页。请在 GUI 浏览器中重新登录并提取 cookie。';
+  } else if (/扫码登录|二维码登录|手机号登录/.test(bodyText.slice(0, 500))) {
+    reason = 'Cookie 已过期，页面显示了登录入口。请在 GUI 浏览器中重新登录并运行 extract_cookies.js 提取最新 cookie。';
+  } else {
+    reason = `Cookie 认证后未检测到有效登录态。当前 URL: ${url.slice(0, 120)}。`;
+  }
+
+  logger.log(`[cookie-only] 认证失败: ${reason}`);
+  return { loggedIn: false, reason };
+}
+
 async function ensureLoggedIn(page, options = {}) {
   const {
     loginUrl = LOGIN_URL,
@@ -752,4 +858,5 @@ module.exports = {
   prepareQrForSharing,
   getQrViewState,
   ensureLoggedIn,
+  cookieOnlyEnsureLoggedIn,
 };

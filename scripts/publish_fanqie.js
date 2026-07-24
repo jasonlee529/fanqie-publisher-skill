@@ -3,8 +3,9 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync, execFile } = require('child_process');
 const { promisify } = require('util');
-const { ensureDir, ensureLoggedIn } = require('./fanqie_login_flow');
+const { ensureDir, ensureLoggedIn, cookieOnlyEnsureLoggedIn } = require('./fanqie_login_flow');
 const { resolvePage } = require('./browser_page_picker');
+const { resolveStatePaths, quickValidateOnPage, DEFAULT_PROFILE: SESSION_DEFAULT } = require('./session_manager');
 const {
   locateMainEditor,
   setProseMirrorContent,
@@ -179,7 +180,10 @@ async function connectBrowser(args, statePath, playwright) {
     browser = await chromium.connectOverCDP(cdpUrl);
     context = browser.contexts()[0] || await browser.newContext({ storageState: statePath });
   } else {
-    browser = await chromium.launch({ headless: false, slowMo: 80 });
+    // 无 CDP 时自动使用 headless 模式（纯 cookie 认证，无法扫码）
+    const headless = args['cookie-only'] || !args['non-headless'];
+    console.log(`[connect] launch browser headless=${headless}`);
+    browser = await chromium.launch({ headless, slowMo: headless ? 0 : 80 });
     context = await browser.newContext({ storageState: statePath });
   }
 
@@ -973,22 +977,31 @@ async function publishOneOnce(page, context, chapter, args, shotsDir, stateFile,
     await page.waitForTimeout(1500);
   }
 
-  const loginCheck = await ensureLoggedIn(page, {
-    qrPath,
-    logger: console,
-    saveStorageState: async () => {
-      await context.storageState({ path: statePath });
-      console.log(`已刷新登录态: ${statePath}`);
-    },
-  });
+  // 在 cookie-only 模式下使用 cookie 认证，否则走完整登录流程（含扫码）
+  const useCookieOnly = !!(args['cookie-only'] || !args.cdp);
+  let loginCheck;
+  if (useCookieOnly) {
+    loginCheck = await cookieOnlyEnsureLoggedIn(page, context, {
+      loginUrl: CHAPTER_MANAGE_URL,
+      statePath,
+      logger: console,
+    });
+  } else {
+    loginCheck = await ensureLoggedIn(page, {
+      qrPath,
+      logger: console,
+      saveStorageState: async () => {
+        await context.storageState({ path: statePath });
+        console.log(`已刷新登录态: ${statePath}`);
+      },
+    });
+  }
+
   if (!loginCheck.loggedIn) {
-    return {
-      chapter,
-      ok: false,
-      reason: loginCheck.qrCapture?.path
-        ? `等待扫码登录超时。二维码截图: ${loginCheck.qrCapture.path}`
-        : '等待扫码登录超时。',
-    };
+    const reason = loginCheck.reason
+      || (loginCheck.qrCapture?.path ? `等待扫码登录超时。二维码截图: ${loginCheck.qrCapture.path}` : null)
+      || '登录态验证失败。';
+    return { chapter, ok: false, reason };
   }
 
   let fillResult;
@@ -1156,11 +1169,16 @@ async function main() {
   const args = parseArgs(process.argv);
   const mode = args.mode || 'immediate';
   const skillRoot = path.resolve(__dirname, '..');
-  const statePath = path.join(skillRoot, 'state', 'fanqie-storage-state.json');
-  const stateFile = path.join(skillRoot, 'state', 'publish-state.json');
+  const profile = args.profile || SESSION_DEFAULT;
+
+  const { storageState: statePath, qrPng: qrPath } = resolveStatePaths(profile);
+  const stateFile = path.join(skillRoot, 'state', `publish-state${profile === SESSION_DEFAULT ? '' : `-${profile}`}.json`);
   const shotsDir = path.join(skillRoot, 'state', 'screenshots');
-  const qrPath = path.join(skillRoot, 'state', 'login-qr.png');
   ensureDir(shotsDir);
+
+  if (profile !== SESSION_DEFAULT) {
+    console.log(`使用 profile: ${profile}`);
+  }
 
   let playwright;
   try {
@@ -1211,6 +1229,65 @@ async function main() {
     collapseFanqieWriterTabs: true,
   });
   console.log(`发布页选择完成: reused=${reusedExistingPage} url=${page.url() || 'about:blank'}`);
+
+  // ----- 会话有效性检测 -----
+  // cookie-only 模式 或 无 CDP 连接时（本地 headless 运行），使用纯 cookie 认证
+  // 这能在 batch 开始前快速判定 cookie 是否有效，避免中途才发现登录态过期。
+  const useCookieOnly = !!(args['cookie-only'] || !args.cdp);
+  if (useCookieOnly) {
+    console.log('[会话检测] 使用纯 Cookie 认证模式（无扫码交互）');
+    const cookieAuth = await cookieOnlyEnsureLoggedIn(page, context, {
+      loginUrl: CHAPTER_MANAGE_URL,
+      statePath,
+      logger: console,
+    });
+
+    if (!cookieAuth.loggedIn) {
+      console.error(`[会话检测] Cookie 认证失败: ${cookieAuth.reason}`);
+      console.error('');
+      console.error('请按以下步骤重新获取有效 cookie:');
+      console.error('  1. 在 GUI 浏览器中登录番茄小说作者后台');
+      console.error(`  2. 运行: node scripts/extract_cookies.js --cdp http://127.0.0.1:9222`);
+      console.error('  3. 将生成的 cookies.json 传输到当前环境');
+      console.error(`  4. 导入: npm run session:import-cookies -- --file cookies.json`);
+      console.error('  5. 重新运行发布命令');
+      await browser.close().catch(() => {});
+      process.exit(1);
+    }
+    console.log('[会话检测] Cookie 认证通过，登录态有效');
+  } else {
+    // CDP 模式：原有预检逻辑
+    const currentUrl = page.url() || '';
+    if (currentUrl && currentUrl !== 'about:blank' && /fanqienovel\.com\/main\/writer/i.test(currentUrl)) {
+      const preCheck = await quickValidateOnPage(page, { logger: console });
+      if (!preCheck.valid) {
+        console.log(`[预检] 当前页面登录态可能已过期: ${preCheck.reason}`);
+        console.log('[预检] 将重新导航到作家页面并完整验证登录态...');
+
+        await page.goto(CHAPTER_MANAGE_URL, { waitUntil: 'domcontentloaded' }).catch(() => {});
+        await page.waitForTimeout(2000);
+
+        const loginCheck = await ensureLoggedIn(page, {
+          qrPath,
+          logger: console,
+          saveStorageState: async () => {
+            await context.storageState({ path: statePath });
+            console.log(`[预检] 已刷新登录态: ${statePath}`);
+          },
+        });
+
+        if (!loginCheck.loggedIn) {
+          console.error('[预检] 会话验证失败，无法开始发布流程。');
+          console.error(`请先运行: node scripts/login_fanqie.js --cdp ${args.cdp || 'http://127.0.0.1:9222'}${profile !== SESSION_DEFAULT ? ` --profile ${profile}` : ''}`);
+          await browser.close().catch(() => {});
+          process.exit(1);
+        }
+        console.log('[预检] 登录态已恢复，继续发布流程。');
+      } else {
+        console.log(`[预检] 登录态有效 (${preCheck.elapsedMs}ms)`);
+      }
+    }
+  }
 
   const results = [];
   for (let i = 0; i < chapters.length; i++) {

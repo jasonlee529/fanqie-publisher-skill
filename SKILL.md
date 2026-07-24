@@ -35,6 +35,8 @@ Expected source content shape:
 - `scripts/login_fanqie.js` — open browser, detect login page, capture QR code, and save login state
 - `scripts/login_fanqie_notify.js` — wrap login flow and emit machine-readable QR/media-ready output for OpenClaw message delivery
 - `scripts/publish_fanqie.js` — publish one or more chapters with Playwright; if the `remote` browser / Windows Chrome 9222 session is not running, auto-try to restore it first; if login expires, fall back to QR login flow; for retryable page-state failures, auto-retry the current chapter once
+- `scripts/extract_cookies.js` — extract cookies from live CDP browser; used to prepare for headless publishing
+- `scripts/session_manager.js` — unified session management: fast validity pre-checks, cookie export/import, multi-profile support
 - `scripts/state.py` — persist publish history and prevent duplicates
 - `references/workflow.md` — current known backend workflow
 - `references/selectors.md` — selectors and page reconnaissance notes
@@ -72,6 +74,71 @@ node "{baseDir}/scripts/login_fanqie.js"
 ```
 
 This will open or connect to the writer backend, switch to QR login when needed, save a QR screenshot to `{baseDir}/state/login-qr.png`, and wait for manual scan / login completion.
+
+**Multi-profile support**: Use `--profile <name>` to manage multiple accounts/sessions. Each profile stores its own login state independently:
+```bash
+node "{baseDir}/scripts/login_fanqie.js" --cdp http://127.0.0.1:9222 --profile account2
+```
+This saves state to `state/fanqie-storage-state-account2.json`. Pass `--profile` to publish commands to use the corresponding session.
+
+**Cookie export/import**: The session manager supports granular cookie operations:
+```bash
+# Export cookies to JSON
+npm run session:export-cookies [-- --profile <name>]
+# Import cookies from JSON
+npm run session:import-cookies -- --file <cookies.json> [--profile <name>]
+# Extract cookies directly from CDP browser (for headless prep)
+npm run session:extract-cookies -- --cdp http://127.0.0.1:9222 [--profile <name>]
+# List all profiles
+npm run session:list
+# Validate session health (offline file check)
+npm run session:check [-- --profile <name>]
+# Validate session health (online, requires --cdp)
+npm run session:validate -- --cdp http://127.0.0.1:9222 [--profile <name>]
+```
+
+### 2b) Headless / Cookie-only publishing (no QR scan required)
+
+When running on a headless server (no GUI, no QR code scanning), follow this workflow:
+
+**Step 1 — On GUI machine**: Log in normally and extract cookies
+```bash
+# Login via QR scan as usual
+npm run login -- --cdp http://127.0.0.1:9222
+
+# Extract cookies to a portable JSON file
+npm run session:extract-cookies -- --cdp http://127.0.0.1:9222
+# Or use the standalone script:
+node "{baseDir}/scripts/extract_cookies.js" --cdp http://127.0.0.1:9222
+```
+This saves cookies to `state/fanqie-cookies.json`.
+
+**Step 2 — Transfer cookies to headless server**: Copy `state/fanqie-cookies.json` to the target machine.
+
+**Step 3 — On headless server**: Import cookies and publish
+```bash
+# Import cookies into storageState
+npm run session:import-cookies -- --file /path/to/fanqie-cookies.json
+
+# Publish with cookie-only mode (auto-enabled when --cdp is NOT provided)
+node "{baseDir}/scripts/publish_fanqie.js" \
+  --file "/path/to/chapters/第001章_标题.md" \
+  --mode immediate \
+  --confirm-publish
+
+# Or explicitly enable cookie-only mode
+node "{baseDir}/scripts/publish_fanqie.js" \
+  --cookie-only \
+  --file "/path/to/chapters/第001章_标题.md" \
+  --mode immediate \
+  --confirm-publish
+```
+
+**Notes**:
+- When `--cdp` is not provided, the publisher auto-detects headless mode and uses pure cookie authentication
+- If cookies are expired, it fails fast with clear guidance instead of polling for a non-existent QR scan
+- Cookies typically last for days, but re-extract periodically
+- Use `npm run session:validate -- --cdp http://...` to check cookie validity on a machine with a GUI browser
 
 ### 3) Fill a single chapter into the Fanqie editor (safe test)
 

@@ -8,9 +8,16 @@
     "preview": "python3 scripts/prepare_chapters.py --help",
     "login": "node scripts/login_fanqie.js",
     "publish": "node scripts/publish_fanqie.js",
+    "session:list": "node scripts/session_manager.js list",
+    "session:check": "node scripts/session_manager.js validate",
+    "session:validate": "node scripts/session_manager.js validate",
+    "session:export-cookies": "node scripts/session_manager.js export-cookies",
+    "session:import-cookies": "node scripts/session_manager.js import-cookies",
+    "session:extract-cookies": "node scripts/session_manager.js extract-cookies",
+    "cookies:extract": "node scripts/extract_cookies.js",
     "test": "node test/test_editor_input.js",
     "test:editor": "node test/test_editor_input.js",
-    "test:syntax": "node --check scripts/editor_input.js && node --check scripts/publish_fanqie.js && echo '✅ Syntax OK'",
+    "test:syntax": "node --check scripts/editor_input.js && node --check scripts/publish_fanqie.js && node --check scripts/login_fanqie.js && node --check scripts/session_manager.js && node --check scripts/fanqie_login_flow.js && node --check scripts/browser_page_picker.js && node --check scripts/extract_cookies.js && echo '✅ Syntax OK'",
     "test:all": "npm run test:syntax && npm run test:editor"
   },
   "keywords": [

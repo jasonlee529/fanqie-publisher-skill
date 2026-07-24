@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { LOGIN_URL, ensureLoggedIn } = require('./fanqie_login_flow');
 const { resolvePage, isFanqieWriterPage } = require('./browser_page_picker');
+const { resolveStatePaths, quickValidateOnPage, exportCookiesToJson, DEFAULT_PROFILE } = require('./session_manager');
 
 function parseArgs(argv) {
   const args = {};
@@ -20,6 +21,24 @@ function parseArgs(argv) {
   return args;
 }
 
+/**
+ * 从已保存的 storageState 中提取 Cookie 统计信息
+ */
+function logCookieSummary(statePath) {
+  try {
+    if (!fs.existsSync(statePath)) return;
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    const cookies = state?.cookies || [];
+    if (!cookies.length) return;
+    console.log(`Cookie 统计: 共 ${cookies.length} 个 Cookie`);
+    const now = Date.now() / 1000;
+    const expiringSoon = cookies.filter((c) => c.expires > 0 && c.expires - now < 86400);
+    if (expiringSoon.length) {
+      console.log(`⚠ ${expiringSoon.length} 个 Cookie 将在 24 小时内过期`);
+    }
+  } catch {}
+}
+
 async function main() {
   let playwright;
   try {
@@ -31,11 +50,16 @@ async function main() {
   }
 
   const args = parseArgs(process.argv);
+  const profile = args.profile || DEFAULT_PROFILE;
   let cdpUrl = args.cdp || 'http://127.0.0.1:9222';
   const loginUrl = LOGIN_URL;
-  const statePath = path.resolve(__dirname, '..', 'state', 'fanqie-storage-state.json');
-  const qrPath = path.resolve(__dirname, '..', 'state', 'login-qr.png');
+
+  const { storageState: statePath, qrPng: qrPath } = resolveStatePaths(profile);
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
+
+  if (profile !== DEFAULT_PROFILE) {
+    console.log(`使用 profile: ${profile}`);
+  }
 
   if (cdpUrl.startsWith('http://') || cdpUrl.startsWith('https://')) {
     const jsonUrl = cdpUrl.replace(/\/$/, '') + '/json/version';
@@ -71,6 +95,31 @@ async function main() {
   console.log('DEBUG: after wait login shell');
   console.log(`已连接 Windows 浏览器: ${cdpUrl}`);
 
+  // ----- 纯提取 cookie 模式（不触发登录流程）-----
+  if (args['extract-cookies-only']) {
+    console.log('进入纯 Cookie 提取模式...');
+    // 确保页面已打开 fanqienovel.com
+    if (!isFanqieWriterPage(page.url())) {
+      await page.goto(loginUrl, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(2000);
+    }
+    // 保存 storageState
+    await context.storageState({ path: statePath });
+    logCookieSummary(statePath);
+    // 导出 cookie JSON
+    const result = exportCookiesToJson(profile);
+    if (result.ok) {
+      console.log(`已导出 Cookie JSON: ${result.path} (${result.count} 个 cookie)`);
+      console.log('可将此文件传输到无头服务器使用。');
+      console.log('COOKIES_EXTRACTED_OK');
+    } else {
+      console.error(`Cookie 导出失败: ${result.error}`);
+    }
+    if (!reusedExistingPage) await page.close().catch(() => {});
+    await browser.close().catch(() => {});
+    process.exit(result.ok ? 0 : 1);
+  }
+
   const loginResult = await ensureLoggedIn(page, {
     loginUrl,
     qrPath,
@@ -87,6 +136,7 @@ async function main() {
     saveStorageState: async () => {
       await context.storageState({ path: statePath });
       console.log(`已保存登录态: ${statePath}`);
+      logCookieSummary(statePath);
     },
   });
 
@@ -105,10 +155,23 @@ async function main() {
 
   if (loginResult.alreadyLoggedIn) {
     await context.storageState({ path: statePath });
+    logCookieSummary(statePath);
     console.log(`检测到当前会话已登录，已刷新保存登录态: ${statePath}`);
     console.log('LOGIN_ALREADY_OK');
   } else {
+    logCookieSummary(statePath);
     console.log('LOGIN_OK');
+  }
+
+  // 如果指定了 --extract-cookies，额外导出纯 cookie JSON（用于传输到无头服务器）
+  if (args['extract-cookies']) {
+    const result = exportCookiesToJson(profile);
+    if (result.ok) {
+      console.log(`已导出 Cookie JSON: ${result.path} (${result.count} 个 cookie)`);
+      console.log('可将此文件传输到无头服务器，通过 session:import-cookies 导入后使用 --cookie-only 模式发布。');
+    } else {
+      console.warn(`Cookie 导出失败: ${result.error}`);
+    }
   }
 
   if (!reusedExistingPage) {

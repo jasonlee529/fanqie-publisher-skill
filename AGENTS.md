@@ -28,10 +28,20 @@ All authoritative project definitions and business logic reside in the following
 | Syntax checks + editor test | `npm run test:all` |
 | Preview chapter parse | `python3 scripts/prepare_chapters.py --dir "/path/to/chapters" --preview` |
 | Login / reconnect | `npm run login` (or `node scripts/login_fanqie.js --cdp http://127.0.0.1:9222`) |
+| Login with profile alias | `node scripts/login_fanqie.js --cdp http://127.0.0.1:9222 --profile <name>` |
+| Session health check (offline) | `npm run session:check` |
+| Session health check (online) | `npm run session:validate -- --cdp http://127.0.0.1:9222` |
+| List all profiles | `npm run session:list` |
+| Export cookies to JSON | `npm run session:export-cookies [-- --profile <name>]` |
+| Import cookies from JSON | `npm run session:import-cookies -- --file <cookie.json> [--profile <name>]` |
+| Extract cookies from live CDP browser | `npm run session:extract-cookies -- --cdp http://127.0.0.1:9222` |
+| **Headless/cookie-only publish** | `node scripts/publish_fanqie.js --cookie-only --file "/path/to/chapter.md" --mode immediate --confirm-publish` |
 | Safe fill-only publish | `node scripts/publish_fanqie.js --cdp http://127.0.0.1:9222 --file "/path/to/chapter.md" --mode immediate --fill-only` |
 | Real publish | Only after explicit user confirmation: use the same reviewed arguments, **remove `--fill-only`**, and add `--confirm-publish`, e.g. `node scripts/publish_fanqie.js --cdp http://127.0.0.1:9222 --file "/path/to/chapter.md" --mode immediate --confirm-publish`; never combine the two flags |
 
 Login requires a manual QR code scan. The login script saves reusable browser storage state locally at `state/fanqie-storage-state.json`; treat it as sensitive local state, and re-run login when the session expires.
+
+**Headless publishing**, when `--cdp` is NOT provided, the publisher auto-detects headless mode and uses pure cookie authentication — no QR scanning required. Extract cookies from a GUI browser first with `npm run session:extract-cookies`, transfer the JSON file to the headless machine, import with `npm run session:import-cookies`, then publish with `--cookie-only` (or omit `--cdp`).
 
 ## UTF-8 / Unicode Safeguards
 
@@ -40,6 +50,17 @@ Login requires a manual QR code scan. The login script saves reusable browser st
 - The editor input flow (`scripts/editor_input.js`) validates CJK, emoji, and newline round-trip fidelity.
 - A round-trip mismatch raises `Unicode 一致性校验失败` — do not downgrade it to success.
 - Always inspect a single filled chapter visually before batch operations.
+
+## Session Management (New)
+
+The `scripts/session_manager.js` module provides unified session management:
+
+- **`quickValidateSession(browser, options)`** — fast pre-check: opens an isolated context with saved `storageState`, navigates to the writer page, and returns `{ valid: true/false }` within ~25s. No polling, no QR scanning. Use before batch publish to avoid mid-batch login failures.
+- **`quickValidateOnPage(page, options)`** — even faster: validates login state on an already-loaded Fanqie writer page.
+- **`exportCookiesToJson(profile)` / `importCookiesFromJson(cookieFile, profile)`** — granular cookie export/import without touching localStorage/sessionStorage.
+- **`listProfiles()` / `copyProfile()` / `deleteProfile()`** — multi-account profile management.
+
+**Publish pre-validation**: `publish_fanqie.js` now performs a quick session check before starting batch publishing. If the cached page shows an expired session, it triggers a re-login prompt early instead of failing mid-batch.
 
 ## Publish Safety Protocol
 

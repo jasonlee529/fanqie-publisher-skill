@@ -1,0 +1,28 @@
+{
+  "name": "qimao-publisher-skill",
+  "version": "0.1.0",
+  "description": "Qimao novel publishing automation via Playwright browser automation",
+  "main": "scripts/publish_qimao.js",
+  "type": "commonjs",
+  "scripts": {
+    "preview": "python3 scripts/prepare_chapters.py --help",
+    "login": "node scripts/login_qimao.js",
+    "publish": "node scripts/publish_qimao.js",
+    "test": "node test/test_editor_input.js",
+    "test:editor": "node test/test_editor_input.js",
+    "test:syntax": "node --check scripts/editor_input.js && node --check scripts/publish_qimao.js && node --check scripts/login_qimao.js && node --check scripts/qimao_login_flow.js && node --check scripts/browser_page_picker_qimao.js && echo '✅ Syntax OK'",
+    "test:all": "npm run test:syntax && npm run test:editor"
+  },
+  "keywords": [
+    "qimao",
+    "playwright",
+    "browser-automation",
+    "novel-publishing",
+    "skill"
+  ],
+  "author": "amm10090",
+  "license": "MIT",
+  "dependencies": {
+    "playwright": "^1.58.2"
+  }
+}

@@ -233,6 +233,20 @@ Current validated publish flow:
 
 This flow has been validated against the live backend. Keep `references/selectors.md` in sync when the page changes.
 
+## 书籍配置（Book Config）
+
+当前账号（龙城飞将529）下的书籍列表：
+
+| 书名 | BOOK_ID | 状态 | 备注 |
+|------|---------|------|------|
+| 重生踢球：从欧洲低级联赛开始 | 7616021706989128728 | 连载中 | 2.5万字 |
+| 裂魂人：我终将成为英雄 | - | 连载中 | 5.4万字 |
+| 测试数目 | 7665650299855440958 | 待审核 | 测试用 |
+
+**URL 格式**：
+- 章节管理：`https://fanqienovel.com/main/writer/chapter-manage/{BOOK_ID}&{书名编码}?type=1`
+- 新建章节：`https://fanqienovel.com/main/writer/{BOOK_ID}/publish/?enter_from=newchapter`
+
 ## Rules
 
 - Prefer publishing one chapter first before batch mode
